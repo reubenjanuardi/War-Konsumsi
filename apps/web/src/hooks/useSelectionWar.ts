@@ -141,7 +141,8 @@ export function useSelectionWar(targetEventId?: string | null): UseSelectionWarR
     targetDate: event?.selectionStartsAt,
     serverTime: event?.serverTime,
     onFinish: useCallback(async () => {
-      if (!event || state === 'COMPLETED' || state === 'SUCCESS') return;
+      // Only transition when user is actively in the WAITING_ROOM and has joined
+      if (!event || !participant || state !== 'WAITING_ROOM') return;
       // When countdown hits zero, automatically transition to SELECTION and load categories
       try {
         const cats = await api.getCategories(event.id);
@@ -157,7 +158,7 @@ export function useSelectionWar(targetEventId?: string | null): UseSelectionWarR
           }
         }, 1000);
       }
-    }, [event, state]),
+    }, [event, participant, state]),
   });
 
   // State Resynchronization Protocol (after reconnect or stale recovery)
@@ -256,7 +257,12 @@ export function useSelectionWar(targetEventId?: string | null): UseSelectionWarR
   // Action: Select Category
   const selectCategory = useCallback(
     async (categoryId: string) => {
-      if (!event || !participant) return;
+      if (!event) return;
+      if (!participant) {
+        setState('JOIN');
+        setErrorMessage('Silakan masukkan nama terlebih dahulu.');
+        return;
+      }
 
       setProcessingCategoryId(categoryId);
       setState('PROCESSING');

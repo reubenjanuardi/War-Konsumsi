@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, renderHook, act } from '@testing-library/react';
 import { JoinScreen } from '../src/components/JoinScreen';
 import { WaitingRoom } from '../src/components/WaitingRoom';
 import { CategoryCard } from '../src/components/CategoryCard';
@@ -8,7 +8,35 @@ import { SelectionScreen } from '../src/components/SelectionScreen';
 import { ConfirmationTicket } from '../src/components/ConfirmationTicket';
 import { StatusBanner } from '../src/components/StatusBanner';
 import { ConnectionIndicator } from '../src/components/ConnectionIndicator';
-import { CategoryStatus, type CategoryDto, type SelectionDto } from '@war-konsumsi/shared';
+import { CategoryStatus, EventStatus, type CategoryDto, type SelectionDto, type EventDetailDto } from '@war-konsumsi/shared';
+import { useSelectionWar } from '../src/hooks/useSelectionWar';
+import { api } from '../src/lib/api';
+import { storage } from '../src/lib/storage';
+
+vi.mock('../src/lib/api', () => ({
+  api: {
+    getCurrentEvent: vi.fn(),
+    getEvent: vi.fn(),
+    getCategories: vi.fn(),
+    joinEvent: vi.fn(),
+    getParticipantSelection: vi.fn(),
+    createSelection: vi.fn(),
+  },
+  ApiError: class ApiError extends Error {
+    code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.code = code;
+    }
+  },
+}));
+
+vi.mock('../src/hooks/useSocket', () => ({
+  useSocket: () => ({
+    socket: null,
+    status: 'CONNECTED',
+  }),
+}));
 
 describe('Participant Frontend Components & Flow Tests', () => {
   // =========================================================================
@@ -316,6 +344,144 @@ describe('Participant Frontend Components & Flow Tests', () => {
         expect(selectBtn).toBeVisible();
         expect(selectBtn.classList.contains('min-h-[48px]')).toBe(true);
       });
+    });
+  });
+
+  // =========================================================================
+  // 7. useSelectionWar Flow States (Late Entry, Early Entry, Selection)
+  // =========================================================================
+  describe('useSelectionWar Flow Lifecycle', () => {
+    const mockOpenEvent: EventDetailDto = {
+      id: 'event-open-1',
+      name: 'Makan Siang Bersama 2026',
+      status: EventStatus.OPEN,
+      selectionStartsAt: '2026-09-15T09:00:00.000Z', // In the past (started)
+      selectionEndsAt: '2026-09-15T12:00:00.000Z',
+      createdAt: '2026-09-15T08:00:00.000Z',
+      updatedAt: '2026-09-15T08:00:00.000Z',
+      serverTime: '2026-09-15T10:00:00.000Z',
+    };
+
+    const mockCategories: CategoryDto[] = [
+      {
+        id: 'cat-1',
+        eventId: 'event-open-1',
+        name: 'Ayam Goreng Lengkuas',
+        description: 'Ayam bumbu lengkuas gurih',
+        imageUrl: null,
+        quota: 25,
+        remainingQuota: 10,
+        status: CategoryStatus.AVAILABLE,
+        isActive: true,
+        createdAt: '2026-09-15T08:00:00.000Z',
+        updatedAt: '2026-09-15T08:00:00.000Z',
+      },
+    ];
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      storage.clearSession();
+    });
+
+    it('should stay in JOIN state when user enters after war has already started (no cached participant)', async () => {
+      vi.mocked(api.getCurrentEvent).mockResolvedValue(mockOpenEvent);
+      vi.mocked(api.getCategories).mockResolvedValue(mockCategories);
+
+      const { result } = renderHook(() => useSelectionWar());
+
+      // Wait for initial init() promise to resolve
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // Must NOT skip to SELECTION even though selectionStartsAt has already passed
+      expect(result.current.state).toBe('JOIN');
+      expect(result.current.participant).toBeNull();
+      expect(result.current.countdown.isFinished).toBe(true);
+    });
+
+    it('should transition directly to SELECTION when joining an event that is already OPEN', async () => {
+      vi.mocked(api.getCurrentEvent).mockResolvedValue(mockOpenEvent);
+      vi.mocked(api.getCategories).mockResolvedValue(mockCategories);
+      vi.mocked(api.joinEvent).mockResolvedValue({
+        id: 'part-123',
+        eventId: 'event-open-1',
+        name: 'Budi Santoso',
+        createdAt: '2026-09-15T10:01:00.000Z',
+      });
+
+      const { result } = renderHook(() => useSelectionWar());
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(result.current.state).toBe('JOIN');
+
+      // User submits their name
+      await act(async () => {
+        await result.current.joinEvent('Budi Santoso');
+      });
+
+      expect(result.current.participant).toMatchObject({ id: 'part-123', name: 'Budi Santoso' });
+      expect(result.current.state).toBe('SELECTION');
+      expect(result.current.categories).toEqual(mockCategories);
+    });
+
+    it('should stay in WAITING_ROOM when joining before start, and auto-transition to SELECTION on countdown finish', async () => {
+      const mockWaitingEvent: EventDetailDto = {
+        id: 'event-waiting-1',
+        name: 'War Dinner',
+        status: EventStatus.OPEN,
+        selectionStartsAt: '2026-09-15T11:00:00.000Z', // In the future
+        selectionEndsAt: '2026-09-15T12:00:00.000Z',
+        createdAt: '2026-09-15T08:00:00.000Z',
+        updatedAt: '2026-09-15T08:00:00.000Z',
+        serverTime: '2026-09-15T10:55:00.000Z', // 5 mins before start
+      };
+
+      vi.mocked(api.getCurrentEvent).mockResolvedValue(mockWaitingEvent);
+      vi.mocked(api.getCategories).mockResolvedValue(mockCategories);
+      vi.mocked(api.joinEvent).mockResolvedValue({
+        id: 'part-456',
+        eventId: 'event-waiting-1',
+        name: 'Siti Rahma',
+        createdAt: '2026-09-15T10:55:30.000Z',
+      });
+
+      const { result } = renderHook(() => useSelectionWar());
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(result.current.state).toBe('JOIN');
+
+      await act(async () => {
+        await result.current.joinEvent('Siti Rahma');
+      });
+
+      // War hasn't started yet -> WAITING_ROOM
+      expect(result.current.state).toBe('WAITING_ROOM');
+      expect(result.current.participant).toMatchObject({ id: 'part-456', name: 'Siti Rahma' });
+    });
+
+    it('should guard selectCategory and reset to JOIN if participant is null', async () => {
+      vi.mocked(api.getCurrentEvent).mockResolvedValue(mockOpenEvent);
+
+      const { result } = renderHook(() => useSelectionWar());
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // Participant is null
+      await act(async () => {
+        await result.current.selectCategory('cat-1');
+      });
+
+      expect(result.current.state).toBe('JOIN');
+      expect(result.current.errorMessage).toBe('Silakan masukkan nama terlebih dahulu.');
     });
   });
 });
