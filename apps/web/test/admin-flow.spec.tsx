@@ -372,5 +372,31 @@ describe('Admin Frontend Components & Flow Tests', () => {
 
       expect(onExport).toHaveBeenCalled();
     });
+
+    it('downloads CSV using cookie credentials when secret is cookie-session', async () => {
+      const mockBlob = new Blob(['sample,csv,data'], { type: 'text/csv' });
+      const globalFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({
+          'content-disposition': 'attachment; filename="rekap-test.csv"',
+        }),
+        blob: vi.fn().mockResolvedValue(mockBlob),
+      });
+      global.fetch = globalFetch;
+
+      // Mock URL.createObjectURL and revokeObjectURL
+      global.URL.createObjectURL = vi.fn().mockReturnValue('blob:mock-url');
+      global.URL.revokeObjectURL = vi.fn();
+
+      await adminApi.downloadExportCsv('cookie-session', 'event-uuid-1');
+
+      expect(globalFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/admin/events/event-uuid-1/export'),
+        expect.objectContaining({
+          credentials: 'include',
+          headers: {},
+        }),
+      );
+    });
   });
 });

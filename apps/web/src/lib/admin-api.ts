@@ -323,14 +323,21 @@ export const adminApi = {
   },
 
   async downloadExportCsv(secret: string, eventId: string): Promise<void> {
+    const headers: Record<string, string> = {};
+    if (secret && secret !== 'cookie-session') {
+      headers['x-admin-secret'] = secret.trim();
+    }
+
     const res = await fetch(`${getAdminApiBase()}/api/admin/events/${eventId}/export`, {
-      headers: {
-        'x-admin-secret': secret.trim(),
-      },
+      headers,
+      credentials: 'include',
+      cache: 'no-store',
     });
 
     if (!res.ok) {
-      throw new AdminApiError('Gagal mengunduh file ekspor CSV.', res.status);
+      const errJson = await res.json().catch(() => ({}));
+      const message = errJson.message || 'Gagal mengunduh file ekspor CSV.';
+      throw new AdminApiError(message, res.status);
     }
 
     const disposition = res.headers.get('content-disposition');
@@ -341,13 +348,16 @@ export const adminApi = {
     }
 
     const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
+    const csvBlob = new Blob([blob], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(csvBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    a.setAttribute('download', filename);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
+    setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 1500);
   },
 };
