@@ -1,0 +1,32 @@
+# ==============================================================================
+# WAR KONSUMSI — SYSTEMD SERVICE FOR BACKEND API
+# ==============================================================================
+# File: /etc/systemd/system/war-konsumsi-api.service
+#
+# Commands:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable war-konsumsi-api
+#   sudo systemctl start war-konsumsi-api
+#   sudo systemctl status war-konsumsi-api
+# ==============================================================================
+
+[Unit]
+Description=War Konsumsi NestJS Backend API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/war-konsumsi/apps/api
+Environment=NODE_ENV=production
+EnvironmentFile=/var/www/war-konsumsi/.env
+ExecStart=/usr/bin/node dist/main.js
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/war-konsumsi/api.log
+StandardError=append:/var/log/war-konsumsi/api-error.log
+
+[Install]
+WantedBy=multi-user.target

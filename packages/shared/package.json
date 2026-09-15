@@ -1,0 +1,23 @@
+{
+  "name": "@war-konsumsi/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"Shared package: lint ok\""
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

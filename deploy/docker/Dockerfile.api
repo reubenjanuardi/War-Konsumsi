@@ -1,0 +1,45 @@
+# ==============================================================================
+# WAR KONSUMSI — API DOCKERFILE (MULTI-STAGE PRODUCTION BUILD)
+# ==============================================================================
+
+# Stage 1: Build dependencies and TypeScript code
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Copy root workspace manifests
+COPY package*.json ./
+COPY packages/shared/package*.json ./packages/shared/
+COPY apps/api/package*.json ./apps/api/
+
+# Install dependencies
+RUN npm ci
+
+# Copy full source trees for shared library and API
+COPY packages/shared ./packages/shared
+COPY apps/api ./apps/api
+COPY tsconfig*.json ./
+
+# Build shared package then API
+RUN npm run build --workspace=@war-konsumsi/shared
+RUN npm run build --workspace=@war-konsumsi/api
+
+# Stage 2: Minimal Production Runtime
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=4000
+
+# Copy node_modules and built packages
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/shared ./packages/shared
+COPY --from=builder /app/apps/api ./apps/api
+COPY --from=builder /app/package*.json ./
+
+# Expose internal API port
+EXPOSE 4000
+
+# Run API in production mode
+CMD ["node", "apps/api/dist/main.js"]

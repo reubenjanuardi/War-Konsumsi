@@ -1,0 +1,23 @@
+# ==============================================================================
+# WAR KONSUMSI — PG_HBA.CONF SECURITY CONFIGURATION SNIPPET
+# ==============================================================================
+# Place these rules at the top of /etc/postgresql/17/main/pg_hba.conf
+#
+# CRITICAL SECURITY INVARIANT:
+# PostgreSQL must not accept connections from external IPs.
+# Browser clients and external attackers must never be allowed direct DB access.
+# ==============================================================================
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# "local" is for Unix domain socket connections only
+local   all             postgres                                peer
+local   war_konsumsi    war_app_user                            scram-sha-256
+
+# IPv4 local connections: ONLY local loopback (127.0.0.1/32)
+host    war_konsumsi    war_app_user    127.0.0.1/32            scram-sha-256
+host    all             postgres        127.0.0.1/32            scram-sha-256
+
+# Explicitly REJECT any external connections
+host    all             all             0.0.0.0/0               reject
+host    all             all             ::/0                    reject

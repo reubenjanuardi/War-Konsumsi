@@ -1,0 +1,23 @@
+# Optional local development helper for developers without native PostgreSQL installed.
+# NOTE: In production, PostgreSQL runs natively on the VPS per PRD and architecture.md.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: war_konsumsi_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: war_konsumsi
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

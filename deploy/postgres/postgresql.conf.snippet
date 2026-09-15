@@ -1,0 +1,49 @@
+# ==============================================================================
+# WAR KONSUMSI — POSTGRESQL PRODUCTION CONFIGURATION SNIPPET
+# ==============================================================================
+# Append or update these settings in:
+#   /etc/postgresql/17/main/postgresql.conf  (Ubuntu/Debian)
+#
+# CRITICAL SECURITY RULE:
+# PostgreSQL must NEVER listen on '*' or public IP interfaces.
+# Only listen on local loopback (127.0.0.1).
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Network & Connectivity (Strictly Local)
+# ------------------------------------------------------------------------------
+listen_addresses = '127.0.0.1,localhost'  # Do NOT use '*' or public IP
+port = 5432
+max_connections = 100                    # Supports API pool (30-50) + admin/migration
+
+# ------------------------------------------------------------------------------
+# 2. Memory & Resource Tuning (Tuned for ~2GB - 4GB RAM VPS)
+# ------------------------------------------------------------------------------
+shared_buffers = 256MB
+work_mem = 4MB
+maintenance_work_mem = 64MB
+effective_cache_size = 768MB
+
+# ------------------------------------------------------------------------------
+# 3. Write Ahead Log (WAL) & Checkpoints (Concurrency Safe Performance)
+# ------------------------------------------------------------------------------
+wal_buffers = 16MB
+checkpoint_completion_target = 0.9
+min_wal_size = 80MB
+max_wal_size = 1GB
+
+# ------------------------------------------------------------------------------
+# 4. Query Planner & Lock Management
+# ------------------------------------------------------------------------------
+random_page_cost = 1.1                   # Appropriate for SSD/NVMe VPS storage
+effective_io_concurrency = 200           # SSD optimization
+
+# ------------------------------------------------------------------------------
+# 5. Logging (Auditing selection concurrency and errors)
+# ------------------------------------------------------------------------------
+logging_collector = on
+log_directory = 'log'
+log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+log_min_messages = warning
+log_min_error_statement = error
+log_line_prefix = '%m [%p] %q%u@%d '

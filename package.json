@@ -1,0 +1,22 @@
+{
+  "name": "war-konsumsi",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@war-konsumsi/shared && npm run build --workspace=@war-konsumsi/api && npm run build --workspace=@war-konsumsi/web",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm run dev --workspace=@war-konsumsi/api",
+    "dev:web": "npm run dev --workspace=@war-konsumsi/web",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "typescript": "^5.7.3"
+  }
+}
