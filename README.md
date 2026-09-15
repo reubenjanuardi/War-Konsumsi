@@ -55,11 +55,17 @@ War-Konsumsi/
 
 ## 🛠️ Prerequisites
 
+### Production VPS Host:
+- **Docker Engine:** `>= 24.x`
+- **Docker Compose:** `>= 2.20.x`
+- **Nginx:** Host reverse proxy and TLS termination
+- **Certbot:** `>= 5.4` (for Let's Encrypt Public IP address certificates)
+- *Note: Host VPS does NOT require Node.js, npm, PM2, or PostgreSQL installed.*
+
+### Local Development Machine:
 - **Node.js:** `>= 20.x` (Recommended: Node 22+ or 24 LTS)
 - **npm:** `>= 10.x` (Recommended: npm 11+)
-- **PostgreSQL:** Native PostgreSQL 16 or 17 (mandatory on production VPS; local Laragon or Docker for dev)
-- **Nginx:** Reverse proxy on ports 80 / 443
-- **PM2:** Process supervisor for Node.js (`npm install -g pm2`)
+- **PostgreSQL:** Local PostgreSQL 17 or Docker Compose helper
 
 ---
 
@@ -125,108 +131,70 @@ Visit:
 
 ---
 
-## 🌐 Production Deployment Guide (Single VPS)
+## 🌐 Production Deployment Guide (Single VPS with Docker Compose)
 
-This guide deploys the application on an Ubuntu 22.04 / 24.04 LTS VPS accessed directly via its Public IP (e.g. `http://103.xxx.xxx.xxx`).
+This guide deploys the application on an Ubuntu 22.04 / 24.04 LTS VPS accessed directly via its Public Server IP over HTTPS (e.g. `https://103.xxx.xxx.xxx`).
 
 ### Production Architecture
 
 ```text
-                             PUBLIC INTERNET
-                                   │
-                                   ▼
-                      [ VPS PUBLIC IP: 103.x.x.x ]
-                                   │
-                            [ Nginx (Port 80) ]
-                                   │
-          ┌────────────────────────┴────────────────────────┐
-          │                                                 │
-          ▼ (Path: /)                                       ▼ (Path: /api, /socket.io)
-[ Next.js Standalone ]                             [ NestJS Application ]
-   (Port 3000, PM2)                                   (Port 4000, PM2)
-                                                           │
-                                                           │ (127.0.0.1:5432)
-                                                           ▼
-                                                [ PostgreSQL 17 Native ]
-                                                (Strictly Loopback / Firewalled)
+                                  INTERNET
+                                     │
+                                     ▼
+                           PUBLIC SERVER IP:443
+                        (Host Nginx + Certbot TLS)
+                                     │
+           ┌─────────────────────────┴─────────────────────────┐
+           │                                                   │
+           ▼ (HTTP 127.0.0.1:3000)                             ▼ (HTTP/WSS 127.0.0.1:4000)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        DOCKER COMPOSE PRODUCTION STACK                                 │
+│                                                                                        │
+│  ┌────────────────────────┐                   ┌─────────────────────────────────────┐  │
+│  │   Next.js Container    │                   │       NestJS Container              │  │
+│  │ (war_konsumsi_web_prod)│                   │    (war_konsumsi_api_prod)          │  │
+│  │   Port 3000 -> 127.0.0.1│                  │      Port 4000 -> 127.0.0.1         │  │
+│  └────────────────────────┘                   └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+│                             PRIVATE DOCKER NETWORK               │ (postgres:5432)     │
+│                                (war_internal_net)                ▼                     │
+│                                               ┌─────────────────────────────────────┐  │
+│                                               │       PostgreSQL 17 Container       │  │
+│                                               │       (war_konsumsi_db_prod)        │  │
+│                                               │       NO PUBLIC PORT EXPOSED        │  │
+│                                               └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+└──────────────────────────────────────────────────────────────────┼─────────────────────┘
+                                                                   │
+                                                                   ▼
+                                                       PERSISTENT DOCKER VOLUME
+                                                         (war_postgres_data)
+                                                        SURVIVES RECREATION
 ```
 
 ---
 
-### Step 1: VPS Preparation & Node.js Setup
+### Step 1: VPS Host Preparation
 
 Log in to your VPS as root or sudo user:
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl git ufw nginx postgresql-client build-essential
+sudo apt install -y curl git ufw nginx certbot
 ```
 
-Install Node.js 22 LTS & PM2:
+Install Docker & Docker Compose:
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-sudo npm install -g pm2
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
 ```
+*(Log out and back in, or run `newgrp docker` to refresh group permissions).*
+
+> [!NOTE]
+> The host VPS does **NOT** require Node.js, npm, PM2, or PostgreSQL installed. All runtimes are cleanly encapsulated inside Docker containers.
 
 ---
 
-### Step 2: Native PostgreSQL Installation & Security Hardening
-
-Per the PRD and architecture invariants, PostgreSQL runs **natively** on the VPS and must **never** be exposed to browser clients or the public internet.
-
-1. **Install PostgreSQL 17:**
-```bash
-sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-sudo apt update
-sudo apt install -y postgresql-17 postgresql-contrib-17
-```
-
-2. **Create Database & Dedicated Application User:**
-```bash
-sudo -u postgres psql
-```
-```sql
-CREATE DATABASE war_konsumsi;
-CREATE USER war_app_user WITH ENCRYPTED PASSWORD 'YOUR_VERY_STRONG_DB_PASSWORD';
-GRANT ALL PRIVILEGES ON DATABASE war_konsumsi TO war_app_user;
-\c war_konsumsi
-GRANT ALL ON SCHEMA public TO war_app_user;
-\q
-```
-
-3. **Harden PostgreSQL Network Access (`postgresql.conf`):**
-Edit `/etc/postgresql/17/main/postgresql.conf`:
-```ini
-# Ensure PostgreSQL ONLY listens on local loopback:
-listen_addresses = '127.0.0.1,localhost'
-port = 5432
-max_connections = 100
-shared_buffers = 256MB
-work_mem = 4MB
-```
-*(Reference snippet: `deploy/postgres/postgresql.conf.snippet`)*
-
-4. **Harden Client Authentication (`pg_hba.conf`):**
-Edit `/etc/postgresql/17/main/pg_hba.conf`. Ensure local connections require password and external connections are rejected:
-```text
-# Local loopback only:
-host    war_konsumsi    war_app_user    127.0.0.1/32    scram-sha-256
-host    all             postgres        127.0.0.1/32    scram-sha-256
-# Reject everything else:
-host    all             all             0.0.0.0/0       reject
-```
-*(Reference snippet: `deploy/postgres/pg_hba.conf.snippet`)*
-
-Restart PostgreSQL to apply changes:
-```bash
-sudo systemctl restart postgresql
-sudo systemctl enable postgresql
-```
-
----
-
-### Step 3: Application Code & Environment Setup
+### Step 2: Clone Repository & Configure Environment
 
 1. **Clone repository:**
 ```bash
@@ -236,60 +204,60 @@ sudo chown -R $USER:$USER /var/www/war-konsumsi
 cd /var/www/war-konsumsi
 ```
 
-2. **Install all dependencies:**
-```bash
-npm install
-```
-
-3. **Configure production environment:**
+2. **Configure production environment:**
 ```bash
 cp .env.production.example .env
 nano .env
 ```
-Populate `.env` with production values:
+
+Ensure production values are configured:
 ```env
 NODE_ENV=production
 PORT=4000
 WEB_PORT=3000
-APP_URL=http://103.xxx.xxx.xxx
+APP_URL=https://103.xxx.xxx.xxx
 API_URL=http://127.0.0.1:4000
 NEXT_PUBLIC_API_URL=
 NEXT_PUBLIC_SOCKET_URL=
-DATABASE_URL=postgres://war_app_user:YOUR_VERY_STRONG_DB_PASSWORD@127.0.0.1:5432/war_konsumsi
+
+# PostgreSQL Database Credentials (used by Docker Compose postgres service)
+POSTGRES_DB=war_konsumsi
+POSTGRES_USER=war_app_user
+POSTGRES_PASSWORD=YOUR_VERY_STRONG_DB_PASSWORD
+
+# PostgreSQL Database Connection URL (used by API container via internal Docker DNS)
+DATABASE_URL=postgres://war_app_user:YOUR_VERY_STRONG_DB_PASSWORD@postgres:5432/war_konsumsi
 DATABASE_POOL_MAX=40
+
 JWT_SECRET=YOUR_64_CHAR_RANDOM_SECRET
 ADMIN_SECRET=YOUR_SECURE_ADMIN_PASSKEY
 ```
 
-4. **Run database migrations and seed default event:**
+---
+
+### Step 3: Launch Docker Compose Production Stack
+
+Build and start all 3 services (`postgres`, `api`, `web`) in detached mode:
 ```bash
-npm run db:migrate --workspace=@war-konsumsi/api
-npm run db:seed --workspace=@war-konsumsi/api
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-5. **Build production bundles:**
+Verify that all containers are healthy and running:
 ```bash
-npm run build
+docker compose -f docker-compose.prod.yml ps
 ```
 
 ---
 
-### Step 4: Process Management with PM2
+### Step 4: Run Database Migrations & Initial Seed
 
-Launch both the NestJS API and Next.js frontend under PM2:
-
+Execute migrations and the default event seed inside the running API container:
 ```bash
-mkdir -p logs
-pm2 start deploy/pm2/ecosystem.config.cjs
-pm2 save
-pm2 startup
-```
-*(Follow the onscreen instructions from `pm2 startup` to enable automatic boot on reboot).*
+# Run Drizzle migrations
+docker compose -f docker-compose.prod.yml exec api npm run db:migrate --workspace=@war-konsumsi/api
 
-Verify processes:
-```bash
-pm2 status
-pm2 logs
+# Seed initial event & categories
+docker compose -f docker-compose.prod.yml exec api npm run db:seed --workspace=@war-konsumsi/api
 ```
 
 ---
@@ -393,35 +361,19 @@ bash deploy/scripts/restore-db.sh ./backups/war_konsumsi_backup_YYYYMMDD_HHMMSS.
 
 ---
 
-### Step 8: Alternative Production Deployment via Docker Compose
-
-If you prefer containerized deployment for reproducible staging:
-
-1. Create `.env` using `.env.production.example`.
-2. Launch the production compose stack:
-```bash
-docker compose -f docker-compose.prod.yml up -d --build
-```
-3. Run migrations inside the API container:
-```bash
-docker compose -f docker-compose.prod.yml exec api npm run db:migrate --workspace=@war-konsumsi/api
-```
-
----
-
 ## 🎯 Pre-Event Verification Checklist
 
 Execute these checks before opening the selection event:
 
-- [ ] **Public Connectivity:** Visit `http://103.xxx.xxx.xxx` from an external 4G/5G mobile connection.
-- [ ] **QR Code Verification:** Generate a QR code pointing to `http://103.xxx.xxx.xxx` and scan with iOS and Android camera apps.
-- [ ] **Health Check:** Query `http://103.xxx.xxx.xxx/api/health` — response must be `status: "ok"` and `database: "connected"`.
-- [ ] **Admin Authentication:** Log into `http://103.xxx.xxx.xxx/admin` using `ADMIN_SECRET`.
+- [ ] **Public Connectivity:** Visit `https://103.xxx.xxx.xxx` from an external 4G/5G mobile connection (HTTPS must load with valid certificate).
+- [ ] **QR Code Verification:** Generate a QR code pointing to `https://103.xxx.xxx.xxx` and scan with iOS and Android camera apps.
+- [ ] **Health Check:** Query `https://103.xxx.xxx.xxx/api/health` — response must be `status: "ok"` and `database: "connected"`.
+- [ ] **Admin Authentication:** Log into `https://103.xxx.xxx.xxx/admin` using `ADMIN_SECRET` (verifying secure HttpOnly cookie).
 - [ ] **Event Configuration:** Verify event dates, category list, initial quotas, and description.
-- [ ] **Firewall Check:** Verify `nmap -p 5432 103.xxx.xxx.xxx` reports the PostgreSQL port as `filtered` or `closed`.
+- [ ] **Firewall Check:** Verify `nmap -p 5432 103.xxx.xxx.xxx` reports the PostgreSQL port as `filtered` or `closed` (not reachable).
 - [ ] **War Simulation:** Perform a final controlled test with 2–3 devices selecting the same category with `quota = 1` to ensure exactly one winner and instant sold-out UI update.
 - [ ] **Clean Seed / Reset:** Reset category quotas or seed clean event data prior to live attendee entry.
-- [ ] **Backup Verified:** Verify at least one fresh `.dump` file exists in `./backups/`.
+- [ ] **Backup Verified:** Verify at least one fresh `.dump` file exists in `./backups/` outside the database container.
 
 ---
 
@@ -434,12 +386,13 @@ Execute these checks before opening the selection event:
 | `npm run lint` | Runs lint checks across all workspaces. |
 | `npm run test` | Executes unit and integration tests (Vitest). |
 | `npm run dev` | Starts NestJS API and Next.js concurrently for development. |
+| `docker compose -f docker-compose.prod.yml up -d --build` | Builds and launches production containers (`postgres`, `api`, `web`). |
+| `docker compose -f docker-compose.prod.yml exec api npm run db:migrate --workspace=@war-konsumsi/api` | Executes database migrations inside API container. |
 | `npx tsx scripts/event-day-fire-drill.ts` | Executes 17-step end-to-end operational fire drill testing full event lifecycle. |
 | `npx tsx scripts/load-test-multi.ts` | Runs multi-tier concurrent war load benchmark (100, 250, 500 users). |
 | `npx tsx scripts/verify-backup-restore-isolated.ts` | Verifies PostgreSQL backup and restoration in an isolated sandbox database. |
-| `pm2 start deploy/pm2/ecosystem.config.cjs` | Starts production services under PM2. |
-| `bash deploy/scripts/backup-db.sh` | Executes automated compressed database backup. |
-| `bash deploy/scripts/restore-db.sh <file>` | Restores a database snapshot safely. |
+| `bash deploy/scripts/backup-db.sh` | Executes automated database backup via container streaming to host `./backups/`. |
+| `bash deploy/scripts/restore-db.sh <file>` | Restores a database snapshot safely via Docker container. |
 | `bash deploy/scripts/setup-ufw-firewall.sh` | Configures and hardens VPS firewall. |
 
 ---

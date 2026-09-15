@@ -156,7 +156,7 @@ Backend:
 
 Database:
 
-- Native PostgreSQL
+- PostgreSQL 17 in Docker (Docker Compose with persistent volume)
 
 ORM:
 
@@ -1019,39 +1019,59 @@ Deploy a reliable one-time event environment with minimal infrastructure.
 ## Deployment Constraints
 
 - Custom domain is not required.
-- Application is accessed through a public server IP.
-- PostgreSQL runs natively on a VPS.
-- PostgreSQL must not be directly accessible from participant browsers.
+- Application is accessed through a public server IP over HTTPS (`https://103.xxx.xxx.xxx`).
+- PostgreSQL runs as a Docker container in the production Docker Compose stack.
+- PostgreSQL uses a persistent Docker volume (`war_postgres_data`), ensuring data survives container recreation.
+- PostgreSQL port 5432 must NOT be exposed publicly or mapped to the host.
+- API connects to PostgreSQL strictly through the private Docker bridge network (`postgres:5432`).
+- Next.js Web, NestJS API, and PostgreSQL run as Docker containers; Host VPS does NOT require Node.js or npm installed.
+- Host Nginx terminates HTTPS on port 443 using Let's Encrypt Public IP certificates.
+- Backup and restore continue using `pg_dump`/`pg_restore` with artifacts stored outside the container on the host (`./backups/`).
 
 Example:
 
 ```text
-http://103.xxx.xxx.xxx
+https://103.xxx.xxx.xxx
 ```
 
 This URL can be encoded into a QR code.
 
-## Recommended Simple Topology
+## Production Topology (Docker Compose)
 
 ```text
-                INTERNET
-                    │
-                    ▼
-              PUBLIC SERVER IP
-                    │
-                  Nginx
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-       Frontend            Backend
-                              │
-                          Socket.IO
-                              │
-                              ▼
-                       PostgreSQL VPS
+                                  INTERNET
+                                     │
+                                     ▼
+                           PUBLIC SERVER IP:443
+                        (Nginx Reverse Proxy + TLS)
+                                     │
+           ┌─────────────────────────┴─────────────────────────┐
+           │                                                   │
+           ▼ (HTTP 127.0.0.1:3000)                             ▼ (HTTP/WSS 127.0.0.1:4000)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        DOCKER COMPOSE PRODUCTION STACK                                 │
+│                                                                                        │
+│  ┌────────────────────────┐                   ┌─────────────────────────────────────┐  │
+│  │   Next.js Container    │                   │       NestJS Container              │  │
+│  │ (war_konsumsi_web_prod)│                   │    (war_konsumsi_api_prod)          │  │
+│  │   Port 3000 -> 127.0.0.1│                  │      Port 4000 -> 127.0.0.1         │  │
+│  └────────────────────────┘                   └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+│                             PRIVATE DOCKER NETWORK               │ (postgres:5432)     │
+│                                (war_internal_net)                ▼                     │
+│                                               ┌─────────────────────────────────────┐  │
+│                                               │       PostgreSQL 17 Container       │  │
+│                                               │       (war_konsumsi_db_prod)        │  │
+│                                               │       NO PUBLIC PORT EXPOSED        │  │
+│                                               └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+└──────────────────────────────────────────────────────────────────┼─────────────────────┘
+                                                                   │
+                                                                   ▼
+                                                       PERSISTENT DOCKER VOLUME
+                                                         (war_postgres_data)
+                                                        SURVIVES RECREATION
 ```
-
-The frontend, backend, and realtime service may run on the same server for the initial deployment.
 
 ## Tasks
 

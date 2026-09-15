@@ -1,8 +1,16 @@
 # ==============================================================================
 # WAR KONSUMSI — PRODUCTION DOCKER COMPOSE CONFIGURATION
 # ==============================================================================
-# NOTE: In production, PostgreSQL runs natively on the VPS per PRD and architecture.md.
-# Containers connect to native PostgreSQL via host.docker.internal (or host network).
+# Architecture:
+# - PostgreSQL 17 runs as a secure container with persistent named volume.
+# - Next.js 15 Web Frontend runs as a containerized service.
+# - NestJS Backend API & Realtime Gateway runs as a containerized service.
+# - Private bridge network (war_internal_net) isolates PostgreSQL entirely:
+#     * Port 5432 is strictly private to the Docker network (NEVER exposed to host/public).
+#     * API connects to PostgreSQL via Docker internal DNS: 'postgres:5432'.
+# - API (4000) and Web (3000) bind strictly to 127.0.0.1 (host loopback)
+#   for the host Nginx reverse proxy with Let's Encrypt Public IP HTTPS.
+# - The host does NOT require Node.js or npm installed for application execution.
 #
 # Usage:
 #   docker compose -f docker-compose.prod.yml up -d --build
@@ -10,7 +18,31 @@
 
 services:
   # ----------------------------------------------------------------------------
-  # NestJS Backend API & Realtime Gateway
+  # 1. PostgreSQL Native Container (Authoritative Source of Truth)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: war_konsumsi_db_prod
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-war_konsumsi}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password must be set in .env}
+    volumes:
+      # Persistent named volume — database survives container teardown & recreation
+      - war_postgres_data:/var/lib/postgresql/data
+    networks:
+      - war_internal_net
+    # IMPORTANT: Port 5432 is INTENTIONALLY NOT EXPOSED to host or public.
+    # It is accessible exclusively through the internal Docker bridge network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-war_konsumsi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # 2. NestJS Backend API & Realtime Gateway (Socket.IO)
   # ----------------------------------------------------------------------------
   api:
     build:
@@ -23,14 +55,18 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=4000
-    extra_hosts:
-      # Allows container to reach native PostgreSQL running on host VPS
-      - "host.docker.internal:host-gateway"
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-war_konsumsi}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Exposed strictly to local host loopback (127.0.0.1) for Nginx reverse proxy
+      - "127.0.0.1:4000:4000"
     networks:
       - war_internal_net
 
   # ----------------------------------------------------------------------------
-  # Next.js Frontend Application
+  # 3. Next.js Mobile-First Web Frontend
   # ----------------------------------------------------------------------------
   web:
     build:
@@ -43,27 +79,22 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-    networks:
-      - war_internal_net
-
-  # ----------------------------------------------------------------------------
-  # Nginx Reverse Proxy Ingress (Only public entrypoint)
-  # ----------------------------------------------------------------------------
-  nginx:
-    image: nginx:alpine
-    container_name: war_konsumsi_nginx_prod
-    restart: always
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx/docker-nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - api
-      - web
+      # Exposed strictly to local host loopback (127.0.0.1) for Nginx reverse proxy
+      - "127.0.0.1:3000:3000"
     networks:
       - war_internal_net
 
+# ------------------------------------------------------------------------------
+# Persistent Docker Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  war_postgres_data:
+    driver: local
+
+# ------------------------------------------------------------------------------
+# Private Internal Bridge Network
+# ------------------------------------------------------------------------------
 networks:
   war_internal_net:
     driver: bridge

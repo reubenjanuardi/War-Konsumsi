@@ -12,7 +12,7 @@ Core product characteristics:
 - Reactive frontend
 - Real-time quota updates
 - Concurrency-safe selection
-- Native PostgreSQL
+- Containerized PostgreSQL in Docker (with persistent volume)
 - Participant and Admin interfaces
 - No custom domain requirement
 - Application accessed through a public server IP
@@ -409,9 +409,11 @@ Required architecture:
 ```text
 Browser
   ↓
-Backend
+Host Nginx (HTTPS on Public Server IP)
   ↓
-PostgreSQL
+NestJS API Container (127.0.0.1:4000)
+  ↓ (Private Docker Network: postgres:5432)
+PostgreSQL Container (war_postgres_data volume)
 ```
 
 Never:
@@ -421,6 +423,10 @@ Browser
   ↓
 PostgreSQL
 ```
+
+Port 5432 must NOT be published to the public internet or the VPS host interface.
+
+PostgreSQL is strictly reachable via the internal Docker bridge network (`war_internal_net`).
 
 Database credentials must never be exposed to the frontend bundle.
 
@@ -463,29 +469,26 @@ The application is intended for one-time event usage.
 
 Custom domain is not required.
 
-The application may be accessed using a public server IP.
+The application is accessed through HTTPS directly using the public server IP.
 
 Example:
 
 ```text
-http://103.xxx.xxx.xxx
+https://103.xxx.xxx.xxx
 ```
 
-PostgreSQL runs natively on a VPS.
+Production deployment runs via **Docker Compose**:
 
-PostgreSQL should not be publicly accessible from arbitrary internet clients.
-
-Prefer:
-
-```text
-Application Server
-      ↓
-Restricted Database Connection
-      ↓
-PostgreSQL VPS
-```
-
-Use firewall rules to restrict PostgreSQL access.
+- **PostgreSQL 17** runs as a Docker container (`war_konsumsi_db_prod`).
+- **NestJS API + Socket.IO** runs as a Docker container (`war_konsumsi_api_prod`).
+- **Next.js Web** runs as a Docker container (`war_konsumsi_web_prod`).
+- **Nginx** remains the public reverse proxy on the host, handling HTTPS termination on port 443 and redirecting HTTP (port 80) to HTTPS.
+- PostgreSQL port 5432 must NOT be exposed publicly or mapped to the host interface.
+- API connects to PostgreSQL strictly through the private Docker network (`postgres:5432` on `war_internal_net`).
+- PostgreSQL uses a persistent Docker volume (`war_postgres_data`) so data survives container recreation.
+- Backup and restore continue using `pg_dump`/`pg_restore` executed via Docker with backup artifacts stored outside the container on the host (`./backups/`).
+- No PM2 inside containers (native container process execution).
+- Node.js / npm does not need to be installed on the host VPS for running the app.
 
 ---
 
@@ -534,7 +537,7 @@ The current recommended stack is:
 
 ### Database
 
-- PostgreSQL Native
+- PostgreSQL 17 in Docker (Docker Compose with persistent volume)
 
 ### ORM
 
@@ -546,7 +549,7 @@ The current recommended stack is:
 
 ### Reverse Proxy
 
-- Nginx
+- Nginx (Host TLS Termination)
 
 These are recommendations, not immutable requirements.
 
@@ -976,6 +979,14 @@ frontend ≠ authorization
 
 ```text
 client state ≠ quota authority
+```
+
+```text
+postgres:5432 ≠ public exposure (private Docker network only)
+```
+
+```text
+container recreation ≠ data loss (persistent Docker volume)
 ```
 
 ---

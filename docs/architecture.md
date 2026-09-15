@@ -57,10 +57,13 @@ browser != direct database access
 realtime != source of truth
 frontend != authorization
 client state != quota authority
+postgres:5432 != public exposure (isolated on private Docker network)
+container recreation != data loss (persistent Docker volume: war_postgres_data)
 ```
 
 ### 2.2 Source of Truth
-- **PostgreSQL Native (Mandatory):** PostgreSQL running natively on the VPS is the **only authoritative source of truth**. Native PostgreSQL on VPS remains mandatory.
+- **PostgreSQL 17 Container (Mandatory Source of Truth):** PostgreSQL running in a dedicated Docker container (`postgres:17-alpine`) with a persistent Docker volume (`war_postgres_data`) on a private Docker bridge network (`war_internal_net`) is the **only authoritative source of truth**.
+- Port `5432` is strictly internal to Docker and never exposed to the host or internet.
 - The browser and frontend frameworks are strictly presentation layers.
 - Real-time communication (Socket.IO) is purely for state propagation, never for state determination. Clients must always treat server responses and database state as authoritative.
 - Server system clock (`now()`) is authoritative. Client-side clocks are ignored for eligibility validation.
@@ -71,19 +74,17 @@ client state != quota authority
 
 ### 3.1 Repository Inspection
 - **Working Directory:** `C:\laragon\www\War-Konsumsi`
-- **Initial Files Present:** `PRD.md`, `AGENTS.md`, `IMPLEMENTATION.md`.
-- **Source Code Present:** None (Greenfield project).
+- **Source Code Present:** Full monorepo implemented (`apps/web`, `apps/api`, `packages/shared`).
 - **Environment & Runtimes Available:**
   - Node.js `v24.12.0`
   - npm `11.14.1`
-  - Bun `1.3.13`
-  - PostgreSQL 17.10 (available locally in Laragon runtime directory)
-  - Docker Desktop 29.6.1 (daemon currently stopped)
-  - Git: Uninitialized repository
+  - PostgreSQL 17 (production containerized in Docker Compose `postgres:17-alpine`)
+  - Docker & Docker Compose
+  - Git: Initialized repository on `main` branch
 
 ### 3.2 Current Implementation Phase
-- Current Phase: **Phase 0 — Project Analysis** (COMPLETING).
-- Next Target: **Phase 1 — Project Foundation**.
+- Current Phase: **Production Hardening & Deployment Architecture Refinement**.
+- Target: Full containerized production deployment ready for execution.
 
 ---
 
@@ -91,14 +92,14 @@ client state != quota authority
 
 | Tier | Technology | Rationale & Selection Criteria |
 | :--- | :--- | :--- |
-| **Frontend** | **Next.js 15 (App Router) + React 19 + TypeScript + Tailwind CSS** | Mobile-first responsiveness, zero hydration bloat, fast load times (<= 2s over mobile networks), high tactile design control. |
-| **Backend** | **NestJS + TypeScript** | Enterprise modularity, native WebSocket Gateway support, clean separation of domain services, robust transaction decorators, built-in validation pipes (`class-validator`). |
-| **Database** | **PostgreSQL 17 Native (on VPS)** | Strict ACID compliance, atomic update capabilities, row-level locking, check constraints, sub-millisecond local query performance. |
+| **Frontend** | **Next.js 15 (App Router) + React 19 + TypeScript + Tailwind CSS** | Mobile-first responsiveness, zero hydration bloat, fast load times (<= 2s over mobile networks), high tactile design control. Containerized via multi-stage Docker build. |
+| **Backend** | **NestJS + TypeScript** | Enterprise modularity, native WebSocket Gateway support, clean separation of domain services, robust transaction decorators, built-in validation pipes (`class-validator`). Containerized via multi-stage Docker build. |
+| **Database** | **PostgreSQL 17 in Docker (Docker Compose)** | Strict ACID compliance, atomic update capabilities, row-level locking, check constraints, sub-millisecond query performance. Backed by persistent named Docker volume (`war_postgres_data`). |
 | **Database Access (ORM)** | **Drizzle ORM + postgres.js** | Thin, high-performance abstraction with full raw SQL expression support (`sql` template tags), zero overhead query building, native transaction support (`db.transaction`), and automated migration tooling (`drizzle-kit`). |
 | **Realtime** | **Socket.IO (via @nestjs/platform-socket.io)** | Robust fallback transport (long-polling if mobile carrier drops WebSocket), native room support, automatic reconnection management, and lightweight footprint. |
-| **Monorepo Tooling** | **npm Workspaces** | Native to Node.js v24 and npm 11; avoids additional global dependency overhead (pnpm/yarn), runs seamlessly across development environments and VPS Linux targets. |
-| **Reverse Proxy / Ingress** | **Nginx Native** | Terminating public IP traffic, proxying `/api` and `/socket.io` to NestJS, and proxying root web traffic to Next.js. |
-| **Process Management** | **PM2 / systemd** | Lightweight process supervision on the VPS with zero unnecessary container virtualization overhead for single-event operations. |
+| **Monorepo Tooling** | **npm Workspaces** | Native to Node.js v24 and npm 11; avoids additional global dependency overhead (pnpm/yarn), runs cleanly inside Docker containers. |
+| **Reverse Proxy / Ingress** | **Nginx (Host)** | Public TLS/HTTPS termination on Public Server IP using Let's Encrypt Public IP certificates, proxying `/api` and `/socket.io` to NestJS container (127.0.0.1:4000), and proxying root web traffic to Next.js container (127.0.0.1:3000). |
+| **Process Management** | **Docker Compose Native (restart: always)** | Standard container lifecycle management. No PM2 inside containers; containers run application processes directly (`node`, `npx next start`). Host VPS requires no Node.js/npm installed. |
 
 ---
 
@@ -455,41 +456,65 @@ Locks client permanently        Pilih konsumsi lainnya."
 ## 10. Deployment & Infrastructure Architecture
 
 ### 10.1 Topology Overview
-The application is designed for a one-time event with zero unnecessary infrastructure. Custom domain is optional; direct public VPS IP is standard.
+The application is designed for a one-time event with zero unnecessary infrastructure. Custom domain is not required; direct public VPS IP with HTTPS is standard.
 
 **Deployment Strategy:**
-- **Single VPS for MVP:** Deploying Nginx, Next.js, NestJS, and native PostgreSQL on a single VPS is the current deployment decision for the MVP to minimize operational overhead and latency.
-- **Architectural Decoupling:** While co-located for the MVP, the architecture is strictly modular and decoupled. The Next.js frontend, NestJS backend, and native PostgreSQL database must remain fully capable of being split across separate servers/nodes later if load testing indicates CPU, RAM, or network bottlenecks.
+- **Docker Compose Stack on Single VPS:** Next.js Web, NestJS API, and PostgreSQL 17 all run as isolated containers defined in `docker-compose.prod.yml`.
+- **Host Nginx Reverse Proxy:** Nginx runs on the host VPS to terminate HTTPS (Port 443) using Let's Encrypt Public IP certificates, route incoming requests, and redirect HTTP (Port 80) to HTTPS.
+- **Zero Host Node.js/npm Requirement:** The VPS host does NOT require Node.js, npm, PM2, or PostgreSQL installed. All runtimes and dependencies are encapsulated inside Docker containers.
+- **Architectural Decoupling:** While running on a single VPS for the event, each tier is completely decoupled. API communicates with PostgreSQL strictly through Docker internal DNS (`postgres:5432`).
 
 ```text
                             PUBLIC INTERNET
-                                  │
-                                  ▼
-                     [ VPS PUBLIC IP: 103.x.x.x ]
-                                  │
-                           [ Nginx (Port 80/443) ]
-                                  │
-         ┌────────────────────────┴────────────────────────┐
-         │                                                 │
-         ▼ (Path: /)                                       ▼ (Path: /api, /socket.io)
-[ Next.js Standalone ]                             [ NestJS Application ]
-   (Port 3000, PM2)                                   (Port 4000, PM2)
-                                                           │
-                                                           │ (127.0.0.1:5432)
-                                                           ▼
-                                                [ PostgreSQL 17 Native ]
-                                                (Mandatory on VPS / Firewalled)
+                                   │
+                                   ▼
+                   [ VPS PUBLIC IP:443 (HTTPS) ]
+                                   │
+                     [ Host Nginx Reverse Proxy ]
+                                   │
+         ┌─────────────────────────┴─────────────────────────┐
+         │                                                   │
+         ▼ (HTTP 127.0.0.1:3000)                             ▼ (HTTP/WSS 127.0.0.1:4000)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        DOCKER COMPOSE PRODUCTION STACK                                 │
+│                                                                                        │
+│  ┌────────────────────────┐                   ┌─────────────────────────────────────┐  │
+│  │   Next.js Container    │                   │       NestJS Container              │  │
+│  │ (war_konsumsi_web_prod)│                   │    (war_konsumsi_api_prod)          │  │
+│  │   Port 3000 -> 127.0.0.1│                  │      Port 4000 -> 127.0.0.1         │  │
+│  └────────────────────────┘                   └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+│                             PRIVATE DOCKER NETWORK               │ (postgres:5432)     │
+│                                (war_internal_net)                ▼                     │
+│                                               ┌─────────────────────────────────────┐  │
+│                                               │       PostgreSQL 17 Container       │  │
+│                                               │       (war_konsumsi_db_prod)        │  │
+│                                               │       NO PUBLIC PORT EXPOSED        │  │
+│                                               └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+└──────────────────────────────────────────────────────────────────┼─────────────────────┘
+                                                                   │
+                                                                   ▼
+                                                       PERSISTENT DOCKER VOLUME
+                                                         (war_postgres_data)
+                                                        SURVIVES RECREATION
 ```
 
 ### 10.2 Network & VPS Security
-- **PostgreSQL Isolation (Mandatory):** Native PostgreSQL runs on the VPS and listens only on `127.0.0.1` or unix domain sockets. Port `5432` must never be exposed to the public internet and must be blocked at the VPS firewall (`ufw deny 5432`). Direct browser-to-database connections are strictly prohibited.
-- **Admin Authentication Transport Security (Mandatory Production Requirement):** Admin authentication transmits sensitive bearer credentials. Transmitting these over plain HTTP across the public internet on a bare VPS IP is insecure (susceptible to packet sniffing and credential interception on public networks). **SSH Port Forwarding Tunneling (`ssh -L 8080:127.0.0.1:80 user@103.xxx.xxx.xxx`)** is the recommended zero-domain secure solution for the one-time event, allowing admins to access the portal securely at `http://localhost:8080/admin` inside an encrypted SSH tunnel. Alternatively, HTTPS with a valid certificate must be configured before admin credentials are transmitted.
+- **PostgreSQL Isolation (Mandatory):** PostgreSQL runs in Docker container `war_konsumsi_db_prod`. Port `5432` is NOT exposed to the host interface or public internet (`ports:` is intentionally omitted in `docker-compose.prod.yml`). The API container connects strictly through the private Docker bridge network (`war_internal_net`). Direct browser-to-database connections are strictly prohibited.
+- **Data Persistence & Container Recreation:** PostgreSQL uses named volume `war_postgres_data` mapped to `/var/lib/postgresql/data`. Database state is stored on the VPS host disk and persists safely through container restarts, stops, and image rebuilds.
+- **Database Migrations:** Schema migrations are applied via the API container using:
+  ```bash
+  docker compose -f docker-compose.prod.yml exec api npm run db:migrate --workspace=@war-konsumsi/api
+  ```
+- **Backup & Restore Strategy:** Backup and restore continue using standard `pg_dump` and `pg_restore`. Executed via `docker exec` in `deploy/scripts/backup-db.sh` and `restore-db.sh`, dumping output directly into `./backups/` on the VPS host filesystem (completely outside the container).
+- **Admin Authentication Transport Security (Mandatory Production Requirement):** Admin credentials and session tokens are protected by HTTPS encryption terminated by Host Nginx using Let's Encrypt Public IP Certificate (Certbot 5.4+). Plain HTTP on port 80 is permanently redirected (301) to HTTPS.
 - **Realtime Delivery Semantics (Best-Effort Propagation):** Realtime WebSocket broadcasts (`category.quota.updated`, `event.status.updated`) provide **best-effort propagation, NOT guaranteed delivery**. Mobile networks may drop frames or disconnect during handoffs. The PostgreSQL database is the sole authoritative source of truth. The application guarantees correctness by enforcing that client state is never authoritative and that clients immediately re-fetch the latest database state upon reconnect or page load.
 - **Nginx Ingress Configuration:**
   - Proxies HTTP/HTTPS traffic to Next.js (`http://127.0.0.1:3000`).
   - Proxies REST API to NestJS (`http://127.0.0.1:4000/api`).
   - Proxies WebSocket requests (`/socket.io`) with `Upgrade $http_upgrade` and `Connection "upgrade"` headers.
-- **Environment Isolation:** Secrets (`DATABASE_URL`, `JWT_SECRET`, `ADMIN_SECRET`) remain in local `.env` files on the server and are never committed to version control.
+- **Environment Isolation:** Secrets (`DATABASE_URL`, `JWT_SECRET`, `ADMIN_SECRET`, `POSTGRES_PASSWORD`) remain in local `.env` files on the server and are never committed to version control.
 
 ---
 
@@ -528,6 +553,13 @@ The application is designed for a one-time event with zero unnecessary infrastru
    - 17-step operational fire drill script (`scripts/event-day-fire-drill.ts`) testing complete event lifecycle.
    - Isolated backup and restore verification (`scripts/verify-backup-restore-isolated.ts`).
    - Multi-tier load benchmark (`scripts/load-test-multi.ts`) validating 100, 250, and 500 concurrent users.
+9. **Containerized Production Topology (Docker Compose):**
+   - PostgreSQL 17, NestJS API, and Next.js Web are packaged and orchestrated via `docker-compose.prod.yml`.
+   - PostgreSQL runs with a dedicated persistent named volume (`war_postgres_data`), ensuring complete data survival across container restarts or teardowns.
+   - Private bridge network (`war_internal_net`) guarantees database port 5432 is strictly unexposed to the VPS host and internet.
+   - Host Nginx provides TLS termination directly on the Public Server IP without requiring a custom domain.
+   - The host VPS remains clean with zero requirement for Node.js, npm, PM2, or native PostgreSQL.
+   - Database migrations are executed via the API container, and backups/restores run via `docker exec` streaming to/from host disk `./backups/`.
 
 ---
 

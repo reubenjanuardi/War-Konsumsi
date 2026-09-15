@@ -10,7 +10,9 @@ param(
   [string]$DbUser = "postgres",
   [string]$DbHost = "127.0.0.1",
   [string]$DbPort = "5432",
-  [string]$BackupDir = "./backups"
+  [string]$BackupDir = "./backups",
+  [string]$ContainerName = "war_konsumsi_db_prod",
+  [string]$UseDocker = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,16 +29,32 @@ Write-Host "Starting PostgreSQL Backup for '${DbName}'" -ForegroundColor Cyan
 Write-Host "Timestamp: $Timestamp" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# Find pg_dump executable (check PATH and standard Laragon locations)
-$pgDump = "pg_dump"
-if (-not (Get-Command pg_dump -ErrorAction SilentlyContinue)) {
-  $laragonPg = "C:\laragon\bin\postgresql\postgresql-17.10\bin\pg_dump.exe"
-  if (Test-Path $laragonPg) {
-    $pgDump = $laragonPg
+# Detect if container is active
+$isContainerRunning = $false
+if ($UseDocker -eq "true" -or $UseDocker -eq "auto") {
+  if (Get-Command docker -ErrorAction SilentlyContinue) {
+    $runningContainers = docker ps --format "{{.Names}}" 2>$null
+    if ($runningContainers -contains $ContainerName) {
+      $isContainerRunning = $true
+    }
   }
 }
 
-& $pgDump -h $DbHost -p $DbPort -U $DbUser -d $DbName -Fc -f $BackupFile
+if ($isContainerRunning) {
+  Write-Host "==> Executing pg_dump inside Docker container '$ContainerName'..." -ForegroundColor Cyan
+  docker exec -i $ContainerName pg_dump -U $DbUser -d $DbName -Fc | Set-Content -Path $BackupFile -AsByteStream
+} else {
+  # Find host pg_dump executable (check PATH and standard Laragon locations)
+  $pgDump = "pg_dump"
+  if (-not (Get-Command pg_dump -ErrorAction SilentlyContinue)) {
+    $laragonPg = "C:\laragon\bin\postgresql\postgresql-17.10\bin\pg_dump.exe"
+    if (Test-Path $laragonPg) {
+      $pgDump = $laragonPg
+    }
+  }
+  Write-Host "==> Executing host pg_dump against ${DbHost}:${DbPort}..." -ForegroundColor Cyan
+  & $pgDump -h $DbHost -p $DbPort -U $DbUser -d $DbName -Fc -f $BackupFile
+}
 
 if (Test-Path $BackupFile) {
   $size = (Get-Item $BackupFile).Length / 1KB

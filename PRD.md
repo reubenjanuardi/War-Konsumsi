@@ -6,7 +6,7 @@
 **Platform:** Mobile First Web App  
 **Primary Users:** Participant / Peserta  
 **Secondary Users:** Admin / Panitia  
-**Database:** Native PostgreSQL on VPS  
+**Database:** PostgreSQL 17 in Docker (Docker Compose with persistent volume)  
 **Domain:** Not required  
 **Application Access:** Public Server IP over HTTPS (Let's Encrypt Public IP Certificate)  
 **Core Concept:** Real Time Limited Quota Selection
@@ -614,8 +614,10 @@ PostgreSQL digunakan sebagai **source of truth** untuk seluruh data penting apli
 
 PostgreSQL:
 
-- native PostgreSQL
-- berjalan pada VPS
+- PostgreSQL 17 container di dalam Docker Compose stack produksi
+- berjalan dengan persistent Docker volume (`war_postgres_data`), data tetap aman saat container restart/recreate
+- terisolasi di dalam private Docker bridge network (`war_internal_net`), port 5432 TIDAK diexpose ke publik maupun host
+- diakses oleh backend API melalui internal Docker network (`postgres:5432`)
 - digunakan untuk event
 - digunakan untuk participant
 - digunakan untuk category
@@ -623,6 +625,7 @@ PostgreSQL:
 - menangani transaction
 - menangani concurrency
 - menyimpan audit data
+- backup & restore tetap menggunakan `pg_dump` dan `pg_restore` dengan artifact disimpan di host VPS di luar container
 
 Database tidak boleh diakses langsung dari browser.
 
@@ -1720,51 +1723,63 @@ Mengukur waktu dari selection dibuka sampai participant berhasil memperoleh kons
 ## 47. Final Architecture Summary
 
 ```text
-                         INTERNET
-                            │
-                            ▼
-                    PUBLIC SERVER IP
-                            │
-              ┌─────────────┴─────────────┐
-              │                           │
-              ▼                           ▼
-         FRONTEND WEB               BACKEND/API
-              │                           │
-              │                    ┌──────┴──────┐
-              │                    │             │
-              │                    ▼             ▼
-              │               Selection       WebSocket
-              │                Service          Gateway
-              │                    │             │
-              └────────────────────┼─────────────┘
-                                   │
-                                   ▼
-                            PostgreSQL VPS
-                                   │
-                                   ▼
-                              Source of Truth
+                                  INTERNET
+                                     │
+                                     ▼
+                           PUBLIC SERVER IP:443
+                        (Nginx Reverse Proxy + TLS)
+                                     │
+           ┌─────────────────────────┴─────────────────────────┐
+           │                                                   │
+           ▼ (HTTP 127.0.0.1:3000)                             ▼ (HTTP/WSS 127.0.0.1:4000)
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        DOCKER COMPOSE PRODUCTION STACK                                 │
+│                                                                                        │
+│  ┌────────────────────────┐                   ┌─────────────────────────────────────┐  │
+│  │     Next.js Web        │                   │     NestJS API & Socket.IO          │  │
+│  │ (war_konsumsi_web_prod)│                   │      (war_konsumsi_api_prod)        │  │
+│  │   Mobile-First UX      │                   │   Selection Service + Gateway       │  │
+│  └────────────────────────┘                   └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+│                             PRIVATE DOCKER NETWORK               │ (postgres:5432)     │
+│                                (war_internal_net)                ▼                     │
+│                                               ┌─────────────────────────────────────┐  │
+│                                               │         PostgreSQL 17 DB            │  │
+│                                               │       (war_konsumsi_db_prod)        │  │
+│                                               │       NO PUBLIC PORT EXPOSED        │  │
+│                                               └──────────────────┬──────────────────┘  │
+│                                                                  │                     │
+└──────────────────────────────────────────────────────────────────┼─────────────────────┘
+                                                                   │
+                                                                   ▼
+                                                       PERSISTENT DOCKER VOLUME
+                                                         (war_postgres_data)
+                                                        SURVIVES RECREATION
 ```
 
 ### Prinsip arsitektur
 
 ```text
-PostgreSQL
-→ Source of truth
+PostgreSQL 17 (Docker Container + Persistent Volume)
+→ Authoritative Source of truth (Port 5432 privat di Docker network)
 
-Backend
-→ Business logic + concurrency control
+NestJS API (Docker Container)
+→ Business logic + concurrency control + atomic transactions
 
-WebSocket
-→ Realtime propagation
+Socket.IO (Docker Container)
+→ Realtime propagation (best-effort)
 
-Frontend
-→ Reactive presentation
+Next.js (Docker Container)
+→ Reactive mobile-first presentation
 
-Public IP
-→ Application access
+Nginx (Host Reverse Proxy)
+→ HTTPS TLS termination pada Public Server IP + routing
 
-QR Code
-→ Participant entry point
+Docker Volume (Host Disk)
+→ war_postgres_data menjamin data bertahan melampaui restart/recreate container
+
+Host Filesystem (./backups)
+→ Penyimpanan artifact backup pg_dump di luar Docker container
 ```
 
 ---
